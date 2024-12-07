@@ -25,6 +25,34 @@ def retrieve_api_data(date_from: str, date_to: str) -> List[dict]:
 
     return matches
 
+def create_document(match: dict) -> str:
+
+    home_goals = match['score']['fullTime']['homeTeam']
+    away_goals = match['score']['fullTime']['awayTeam']
+
+    home_team_name = match['homeTeam']['name']
+    away_team_name = match['awayTeam']['name']
+
+    document = ''
+    document += match['competition']['name'] +'/n'
+    document += 'In ' + match['area']['name'] + ','
+    document += ' in the ' + match['season']['startDate'][0:4] + '-' + match['season']['endDate'][0:4] + ' season,'
+    document += ' occurring on ' + match['utcDate'][0:10] 
+    document += ' for matchday ' + str(match['matchday']) + ','
+    document += ' and played at ' + home_team_name + '. '
+    document += 'The match was between ' + home_team_name + ' vs ' + away_team_name + '. '
+    document += 'The score was ' + home_goals + ' - ' + away_goals + ', '
+    document += 'where ' + home_team_name + ' scored ' + home_goals + ' goals and ' + away_team_name + ' scored ' + away_goals + ' goals. '
+
+    if home_goals > away_goals:
+        document += home_team_name + ' won the match.'
+    elif home_goals < away_goals:
+        document += away_team_name + ' won the match.'
+    else:
+        document += 'The match was a draw.' #Currently, this assumes that there aren't tie-brakers like penalty kicks
+
+    return document
+
 def save_api_data():
     pass
 
