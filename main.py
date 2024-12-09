@@ -6,7 +6,9 @@ import re
 import datetime
 import time
 import logging
+import numpy as np
 
+from langchain_community.embeddings import HuggingFaceEmbeddings
 import voyager
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -125,56 +127,67 @@ def save_api_data(all_matches: List[dict]) -> dict:
     return match_documents
 
 
-def embed_data(match_documents: dict, hf_token: str, model_name: str = 'sentence-transformers/all-MiniLM-L6-v2') -> dict:
+def embed_data(match_documents: dict, model_name: str = 'sentence-transformers/all-MiniLM-L6-v2', device: str = 'cpu') -> dict:
     """ 
     Embeds the match documents using a Hugging Face model
 
     Args:
         match_documents (dict): The match documents, where the key is the ID and the value is the document
-        hf_token (str): The Hugging Face token
         model_name (str): The name of the Hugging Face model name to use for embedding
+        device (str): The device to use for embedding
 
     Returns:
         dict: The embeddings, where the key is the ID and the value is the embedding
     """
+    filename = 'embeddings.json'
+    try:
+        with open(filename, 'r') as f:
+            embeddings = json.load(f)
+            logger.info('Retrieved embeddings from file')
+    except:
+        all_matches = match_documents
+        logger.info('Creating new embeddings')
+        embeddings = {}
 
-    embeddings = {}
+        texts = []
+        ids = []
+        for id in match_documents:
+            texts.append(match_documents[id])
+            ids.append(id)
 
-    texts = []
-    ids = []
-    for id in match_documents:
-        texts.append(match_documents[id])
-        ids.append(id)
+        response_data = embed_texts(texts, model_name, device)
+        
+        for i in range(len(ids)):
+            embeddings[ids[i]] = response_data[i]
 
-    response_data = embed_texts(texts, hf_token, model_name)
-    
-    for i in range(len(ids)):
-        embeddings[ids[i]] = response_data[i]
+        with open(filename, 'w') as f:
+            json.dump(embeddings, f)
+
+        logger.info('Saved embeddings to file')
 
     return embeddings
 
 
-def embed_texts(texts: List[str], hf_token: str, model_name: str = 'sentence-transformers/all-MiniLM-L6-v2') -> List[list]:
+def embed_texts(texts: List[str], model_name: str = 'sentence-transformers/all-MiniLM-L6-v2', device: str = 'cpu') -> List[list]:
     """ 
     Embeds a list of texts using a Hugging Face model
 
     Args:
         texts (List[str]): A list of texts
-        hf_token (str): The Hugging Face token
         model_name (str): The name of the Hugging Face model name to use for embedding
+        device (str): The device to use for embedding
 
     Returns:
         List[list]: A list of embeddings, one for each string in texts
     """
-    api_url = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{model_name}"
-    headers = {"Authorization": f"Bearer {hf_token}"}
 
-    response = requests.post(api_url, headers=headers, json={"inputs": texts, "options":{"wait_for_model":True}})
-    response.raise_for_status()  # This will raise an exception for error status codes
-    
-    response_data = response.json()
-
-    return response_data
+    embedding_model = HuggingFaceEmbeddings(model_name=model_name,
+                                            multi_process=False,
+                                            model_kwargs={"device": device},
+                                            encode_kwargs={"normalize_embeddings": True},  # Set `True` for cosine similarity
+                                            )
+    embeddings = embedding_model.embed_documents(texts)
+    return embeddings
 
     
 def save_embeddings(embeddings_dict: dict) -> voyager.Index:
@@ -193,14 +206,25 @@ def save_embeddings(embeddings_dict: dict) -> voyager.Index:
 
     index = voyager.Index(voyager.Space.Cosine, num_dimensions=num_dimensions)
     for id, embedding in embeddings_dict.items():
-        index.add_item(embedding, id)
+        index.add_item(embedding, int(id))
 
     return index
 
 
-def embed_query(query: str, hf_token: str, model_name: str) -> list:
+def embed_query(query: str, model_name: str, device: str) -> list:
+    """ 
+    Embeds a query using a Hugging Face model
+
+    Args:
+        query (str): The query
+        model_name (str): The name of the Hugging Face model name to use for embedding
+        device (str): The device to use for embedding
+
+    Returns:
+        list: The embedding of the query
+    """
     texts = [query]
-    return embed_texts(texts, hf_token, model_name)[0]
+    return embed_texts(texts, model_name, device)[0]
 
 
 def search_embeddings(query_embedding: list, index: voyager.Index, number_of_results: int) -> List[int]:
@@ -269,7 +293,7 @@ If the answer cannot be deduced from the context, do not give an answer."""},
 
     input_text=tokenizer.apply_chat_template(messages, tokenize=False)
     inputs = tokenizer.encode(input_text, return_tensors="pt").to(device)
-    outputs = model.generate(inputs, max_new_tokens=50, temperature=0.2, top_p=0.9, do_sample=True)
+    outputs = model.generate(inputs, max_new_tokens=100, temperature=0.2, top_p=0.9, do_sample=True)
     return parse_response(tokenizer.decode(outputs[0]), model_name)
 
 
@@ -299,33 +323,9 @@ def parse_response(text: str, llm_model_name: str) -> str:
     return answer
 
 
-
-def test_create_document():
-    input = {'area': {'id': 2081, 'name': 'France', 'code': 'FRA', 'flag': 'https://crests.football-data.org/773.svg'}, 'competition': {'id': 2015, 'name': 'Ligue 1', 'code': 'FL1', 'type': 'LEAGUE', 'emblem': 'https://crests.football-data.org/FL1.png'}, 'season': {'id': 2290, 'startDate': '2024-08-18', 'endDate': '2025-05-18', 'currentMatchday': 14, 'winner': None}, 'id': 498034, 'utcDate': '2024-11-01T18:00:00Z', 'status': 'FINISHED', 'matchday': 10, 'stage': 'REGULAR_SEASON', 'group': None, 'lastUpdated': '2024-12-07T00:20:53Z', 'homeTeam': {'id': 548, 'name': 'AS Monaco FC', 'shortName': 'Monaco', 'tla': 'ASM', 'crest': 'https://crests.football-data.org/548.png'}, 'awayTeam': {'id': 532, 'name': 'Angers SCO', 'shortName': 'Angers SCO', 'tla': 'ANG', 'crest': 'https://crests.football-data.org/532.png'}, 'score': {'winner': 'AWAY_TEAM', 'duration': 'REGULAR', 'fullTime': {'home': 0, 'away': 1}, 'halfTime': {'home': 0, 'away': 1}}, 'odds': {'msg': 'Activate Odds-Package in User-Panel to retrieve odds.'}, 'referees': [{'id': 57501, 'name': 'Abdelatif Kherradji', 'type': 'REFEREE', 'nationality': 'France'}]}
-
-    expected = ''
-    expected += 'Ligue 1. '
-    expected += 'In France,'
-    expected += ' in the 2024-2025 season,'
-    expected += ' occurring on 2024-11-01 '
-    expected += 'for matchday 10,'
-    expected += ' and played at AS Monaco FC. '
-    expected += 'The match was between AS Monaco FC vs Angers SCO. '
-    expected += 'The score was 0 - 1, '
-    expected += 'where AS Monaco FC scored 0 goals and Angers SCO scored 1 goals. '
-    expected += 'Angers SCO won the match.'
-
-    output = create_document(input)
-
-    if output == expected:
-        print('test_create_document passed')
-    else:
-        print('test_create_document failed')
-
-
 def main():
-    embedding_model_name = 'sentence-transformers/all-MiniLM-L6-v2'
-    number_of_search_results = 3
+    embedding_model_name = 'thenlper/gte-small' #'sentence-transformers/all-MiniLM-L6-v2'
+    number_of_search_results = 5
 
     checkpoint = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
 
@@ -334,28 +334,37 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(checkpoint).to(device)
 
     matches = retrieve_api_data()
+    logger.info('Retrieved ' + str(len(matches)) + ' matches')
     match_documents = save_api_data(matches)
 
-    hf_token = os.environ['HF_WRITE_TOKEN']
+    logger.info('Saved match documents')
 
-    embeddings = embed_data(match_documents, hf_token, embedding_model_name)
+    embeddings = embed_data(match_documents, embedding_model_name, device)
+    logger.info('Embedded ' + str(len(embeddings)) + ' match documents')
     
     index = save_embeddings(embeddings)
 
-    query = 'What was the score of the match between Monaco and Angers SCO in the 2024-2025 season?'
-
-    query_embedding = embed_query(query, hf_token, embedding_model_name)
-    search_results = search_embeddings(query_embedding, index, number_of_search_results)
+    queries = ['How many goals did Ajax score at PSV Eindhoven in the 2023-2024 season?',
+               'What was the score of the match between Monaco and Angers SCO in the 2024-2025 season?',
+               ]
     
-    context = create_document_context(match_documents, search_results)
-    logger.info('')
-    logger.info('Retrieved documents:')
-    logger.info(context)
-    answer = query_llm(query, context, tokenizer, model, device, checkpoint)
+    for query in queries:
+        logger.info('')
+        logger.info('Query: ' + query)
 
-    print(answer)
+        query_embedding = embed_query(query, embedding_model_name, device)
+        search_results = search_embeddings(query_embedding, index, number_of_search_results)
+        
+        context = create_document_context(match_documents, search_results)
+        logger.info('')
+        logger.info('Retrieved documents:')
+        logger.info(context)
+        answer = query_llm(query, context, tokenizer, model, device, checkpoint)
 
-#    test_create_document()
+        logger.info('')
+        logger.info('Answer:')
+        logger.info(answer)
+
 
 
 if __name__ == '__main__':
